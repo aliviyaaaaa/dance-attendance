@@ -1,0 +1,19 @@
+# Секреты и персональные данные
+.env
+teacher_aliases.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Данные и результаты (могут содержать сведения о студии)
+data/
+logs/
+reports/
+*.sqlite
+*.db
+
+# macOS
+.DS_Store
