@@ -63,13 +63,15 @@ CREATE TABLE IF NOT EXISTS bookings (
     PRIMARY KEY (schedule_id, date)
 );
 
+-- id в CRM уникален только внутри вида: у отмен и замен свои счётчики, номера пересекаются
 CREATE TABLE IF NOT EXISTS changes (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER NOT NULL,
     date           TEXT NOT NULL,
     schedule_id    INTEGER,
     entity         TEXT NOT NULL,     -- cancel / substitute
     source_teacher TEXT,
-    teacher        TEXT
+    teacher        TEXT,
+    PRIMARY KEY (entity, id)
 );
 
 -- Показатели группы за неделю (считает app/attendance.py, пересчитываются целиком)
@@ -93,6 +95,8 @@ CREATE TABLE IF NOT EXISTS weekly_group_stats (
     baseline              REAL,
     change_pct            REAL,
     history_weeks         INTEGER NOT NULL,
+    small                 INTEGER NOT NULL,
+    small_avg             REAL,
     status                TEXT NOT NULL,
     status_reason         TEXT,
     PRIMARY KEY (week_start, group_id)
@@ -111,5 +115,13 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # weekly_group_stats — производная таблица: если её структура устарела, пересоздаём (данные пересчитаются)
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(weekly_group_stats)")}
+    if columns and "small" not in columns:
+        conn.execute("DROP TABLE weekly_group_stats")
+    # Старая версия changes с ключом только по id теряла записи — пересоздаём, данные перезагрузятся из CRM
+    pk = [r[1] for r in conn.execute("PRAGMA table_info(changes)") if r[5]]
+    if pk == ["id"]:
+        conn.execute("DROP TABLE changes")
     conn.executescript(SCHEMA)
     return conn

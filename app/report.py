@@ -79,11 +79,23 @@ def week_changes(conn, monday: date) -> pd.DataFrame:
     df = pd.read_sql_query(
         """SELECT c.date, c.entity, c.source_teacher, c.teacher, s.group_id, s.minutes_begin
            FROM changes c JOIN sessions s ON s.schedule_id = c.schedule_id AND s.date = c.date
-           WHERE c.date BETWEEN ? AND ? ORDER BY c.date, s.minutes_begin""",
+           WHERE c.date BETWEEN ? AND ? AND c.entity IN ('cancel', 'substitute', 'transfer')
+           ORDER BY c.date, s.minutes_begin""",
         conn, params=(monday.isoformat(), (monday + timedelta(days=6)).isoformat()))
     labels = group_labels(conn, monday)
     df["Группа"] = df["group_id"].map(lambda g: " · ".join(labels[g].split(" · ")[:2]))  # направление · преподаватель
     return df
+
+
+def recent_series(conn, monday: date, weeks: int) -> dict[int, str]:
+    """Группа → «2,5 → 5,5 → 3,0 → 5,0»: чел./занятие за последние недели с занятиями (до monday включительно)."""
+    rows = conn.execute(
+        """SELECT group_id, avg_per_session FROM weekly_group_stats
+           WHERE week_start <= ? AND sessions_held > 0 ORDER BY week_start""", (monday.isoformat(),)).fetchall()
+    per_group: dict[int, list[float]] = {}
+    for gid, avg in rows:
+        per_group.setdefault(gid, []).append(avg)
+    return {gid: " → ".join(fmt_num(x) for x in values[-weeks:]) for gid, values in per_group.items()}
 
 
 # ---------- текст ----------
@@ -123,13 +135,21 @@ def build_text(conn, monday: date) -> str:
     growing = stats[stats["status"] == STATUS_GROW].sort_values("change_pct", ascending=False).head(TOP_GROWING)
     block("🟢 Растут", growing, lambda r: f"• {r['Группа']}\n  {r['status_reason']}")
 
+    small = stats[stats["small"] == 1].sort_values("small_avg")
+    series = recent_series(conn, monday, config.SMALL_GROUP_WEEKS)
+    block(f"🧊 Маленькие — стоит греть (в среднем меньше {config.SMALL_GROUP_PEOPLE} чел./занятие "
+          f"за {config.SMALL_GROUP_WEEKS} нед.)", small,
+          lambda r: f"• {r['Группа']}\n  в среднем {fmt_num(r['small_avg'])}: {series.get(r['group_id'], '')}")
+
     changes = week_changes(conn, monday)
     lines.extend(["", "⛔ Отмены и замены"])
     if changes.empty:
         lines.append("нет")
     for _, c in changes.iterrows():
         when = f"{date.fromisoformat(c['date']):%d.%m} {hhmm(c['minutes_begin'])}"
-        if c["entity"] == "cancel":
+        if c["entity"] == "transfer":
+            lines.append(f"• перенос: {c['Группа']}, {when}")
+        elif c["entity"] == "cancel":
             lines.append(f"• отмена: {c['Группа']}, {when}")
         else:
             lines.append(f"• замена: {c['Группа']}, {when} — вела {c['teacher'] or '?'}")
@@ -164,6 +184,8 @@ def build_excel(conn, monday: date) -> str:
         "Пустых": stats["sessions_empty"],
         "Вне расписания": stats["sessions_off_schedule"],
         "Заполняемость зала (справочно)": stats["fill_rate"],
+        "🧊 Маленькая, греть": stats["small"].map({1: "да", 0: ""}),
+        f"Среднее за {config.SMALL_GROUP_WEEKS} нед.": stats["small_avg"].round(1),
     })
 
     weeks = [w for w in loaded_weeks(conn) if w <= monday][-8:]
@@ -181,7 +203,7 @@ def build_excel(conn, monday: date) -> str:
         "Дата": pd.to_datetime(changes["date"]).dt.strftime("%d.%m.%Y"),
         "Время": changes["minutes_begin"].map(hhmm),
         "Группа": changes["Группа"],
-        "Что": changes["entity"].map({"cancel": "отмена", "substitute": "замена"}),
+        "Что": changes["entity"].map({"cancel": "отмена", "substitute": "замена", "transfer": "перенос"}),
         "Вела вместо": changes["source_teacher"],
         "Вела": changes["teacher"],
     })

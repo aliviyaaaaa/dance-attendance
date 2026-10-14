@@ -50,13 +50,24 @@ def test_no_drop_when_less_than_25_percent():
     assert status_of(week(16), [week(20)] * 4) == STATUS_OK      # −20%, хоть и −4 чел.
 
 
-def test_drop_when_few_people_two_weeks_in_row():
-    history = [week(5)] * 3 + [week(3.5)]
-    assert status_of(week(3), history) == STATUS_DROP
+def test_stable_small_group_is_marked_not_dropped():
+    current = assign_status(week(3.5), [week(4)] * 4)
+    assert current.small and current.small_avg == pytest.approx((4 * 3 + 3.5) / 4)
+    assert current.status == STATUS_OK              # маленькая, но не просела
 
 
-def test_few_people_one_week_is_not_drop():
-    assert status_of(week(3.5), [week(5)] * 4) == STATUS_OK
+def test_normal_group_is_not_small():
+    assert not assign_status(week(8), [week(7)] * 4).small
+
+
+def test_small_uses_last_4_weeks_including_current():
+    # раньше была большой, последние 4 недели — маленькая
+    assert assign_status(week(3), [week(15)] * 3 + [week(4)] * 3).small
+
+
+def test_new_group_can_be_small():
+    current = assign_status(week(2), [week(3)])
+    assert current.status == STATUS_NEW and current.small
 
 
 def test_low_fill_rate_alone_is_not_drop():
@@ -222,3 +233,18 @@ def test_parse_admin_summary(monkeypatch):
         ("2026-09-28", "Сидорова О.", 6),
         ("2026-09-28", "Сидорова О.", 4),
     ]
+
+
+def test_zero_baseline_does_not_crash():
+    # бывают недели, где посещения не отмечены (0), — расчёт не должен падать
+    assert status_of(week(5), [week(0)] * 4) == STATUS_OK
+
+
+def test_changes_with_same_id_but_different_kind_are_both_kept(tmp_path, monkeypatch):
+    # в CRM у отмен и замен свои счётчики: отмена №251 и замена №251 — разные записи
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite")
+    conn = db.connect()
+    conn.execute("INSERT OR REPLACE INTO changes VALUES (251, '2026-10-05', 1745, 'substitute', 'А.', 'Б.')")
+    conn.execute("INSERT OR REPLACE INTO changes VALUES (251, '2026-01-21', 99, 'cancel', NULL, NULL)")
+    assert conn.execute("SELECT COUNT(*) FROM changes").fetchone()[0] == 2

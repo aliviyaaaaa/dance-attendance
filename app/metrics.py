@@ -55,6 +55,8 @@ class GroupWeek:
     baseline: float | None = None
     change_pct: float | None = None
     history_weeks: int = 0
+    small: bool = False                # 🧊 стабильно маленькая — стоит греть
+    small_avg: float | None = None     # среднее «чел./занятие» за последние недели
     status: str = STATUS_OK
     status_reason: str = ""
 
@@ -145,8 +147,20 @@ def baseline(history: list[GroupWeek | None], weeks: int = config.BASELINE_WEEKS
     return sum(w.avg_per_session for w in recent) / len(recent)
 
 
+def mark_small(current: GroupWeek, history: list[GroupWeek | None], cfg=config) -> GroupWeek:
+    """🧊 Стабильно маленькая: в среднем меньше SMALL_GROUP_PEOPLE чел./занятие
+    за последние SMALL_GROUP_WEEKS недель с занятиями (включая текущую). Не зависит от статуса."""
+    if current.sessions_held == 0:
+        return current
+    recent = active(history)[-(cfg.SMALL_GROUP_WEEKS - 1):] + [current] if cfg.SMALL_GROUP_WEEKS > 1 else [current]
+    current.small_avg = sum(w.avg_per_session for w in recent) / len(recent)
+    current.small = current.small_avg < cfg.SMALL_GROUP_PEOPLE
+    return current
+
+
 def assign_status(current: GroupWeek, history: list[GroupWeek | None], cfg=config) -> GroupWeek:
     """Статус группы за неделю. history — прошлые недели (старые → новые), без текущей."""
+    mark_small(current, history, cfg)
     past = active(history)
     current.history_weeks = len(past)
     current.baseline = baseline(history, cfg.BASELINE_WEEKS)
@@ -171,14 +185,11 @@ def assign_status(current: GroupWeek, history: list[GroupWeek | None], cfg=confi
 
     if len(past) < cfg.NEW_GROUP_MIN_WEEKS:
         return done(STATUS_NEW, f"история {len(past)} нед.")
+    if not base:
+        return done(STATUS_OK, "обычный уровень 0 — сравнивать не с чем")
 
     if current.change_pct <= -cfg.DROP_PCT and base - avg >= cfg.DROP_MIN_PEOPLE:
         return done(STATUS_DROP, f"{base:.1f} → {avg:.1f} чел./занятие ({current.change_pct:+.0%})")
-
-    previous = past[len(past) - (cfg.MIN_PEOPLE_WEEKS - 1):]
-    if all(w.avg_per_session < cfg.MIN_PEOPLE for w in previous + [current]):
-        return done(STATUS_DROP, f"меньше {cfg.MIN_PEOPLE} чел./занятие {cfg.MIN_PEOPLE_WEEKS} нед. подряд: "
-                    + " → ".join(f"{w.avg_per_session:.1f}" for w in previous + [current]))
 
     series = [w.avg_per_session for w in past[-cfg.WATCH_DECLINE_WEEKS:]] + [avg]
     if len(series) == cfg.WATCH_DECLINE_WEEKS + 1 and all(b < a for a, b in zip(series, series[1:])):

@@ -14,7 +14,7 @@ from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboar
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
 
 from app import config, db, sync
-from app.admin_check import build_check_text, looks_like_summary
+from app.admin_check import build_check_text, looks_like_summary, parse_admin
 from app.crm_client import CrmError
 from app.lessons import build_lessons_report, parse_period, recent_pay_periods
 from app.metrics import STATUS_CANCELLED, STATUS_DROP, STATUS_GROW, STATUS_NEW, STATUS_OK, STATUS_WATCH
@@ -129,8 +129,29 @@ async def do_report(message: Message, monday: date):
     await send_with_file(message, *await asyncio.to_thread(with_db, build_report, monday))
 
 
+async def reload_period(message: Message, start: date, end: date):
+    """Перед расчётом зарплаты и сверкой — заново загрузить период из CRM:
+    админы отмечают посещения задним числом, иногда спустя две недели."""
+    mondays, monday = [], sync.monday_of(start)
+    while monday <= min(end, date.today()):
+        mondays.append(monday)
+        monday += timedelta(weeks=1)
+    if crm_lock.locked():
+        await message.answer("Сейчас уже идёт обновление из CRM, считаю по загруженным данным.")
+        return
+    async with crm_lock:
+        try:
+            await asyncio.to_thread(sync.sync_weeks, mondays)
+        except CrmError as e:
+            log.error("%s", e)
+            await message.answer(f"⚠️ Не удалось обновить данные из CRM ({e.problem}), "
+                                 "считаю по последним загруженным.")
+
+
 async def do_visits(message: Message, start: date, end: date):
-    await message.answer(f"Считаю посещения и зарплату за {start:%d.%m}–{end:%d.%m}…")
+    await message.answer(f"Обновляю данные из CRM за {start:%d.%m}–{end:%d.%m} и считаю зарплату, "
+                         "это около полуминуты…")
+    await reload_period(message, start, end)
     await send_with_file(message, *await asyncio.to_thread(with_db, build_lessons_report, start, end))
 
 
@@ -146,7 +167,10 @@ async def do_groups(message: Message):
         if rows.empty:
             continue
         lines += ["", status]
-        lines += [f"• {r['Группа']} — {fmt_num(r['avg_per_session'])}" for _, r in rows.iterrows()]
+        lines += [f"• {r['Группа']} — {fmt_num(r['avg_per_session'])}{' 🧊' if r['small'] else ''}"
+                  for _, r in rows.iterrows()]
+    lines += ["", f"🧊 — маленькая группа, стоит греть (в среднем меньше {config.SMALL_GROUP_PEOPLE} чел. "
+                  f"за {config.SMALL_GROUP_WEEKS} нед.)"]
     await send_long(message, "\n".join(lines))
 
 
@@ -162,12 +186,16 @@ async def do_refresh(message: Message):
 
 
 async def do_check(message: Message, text: str):
-    await message.answer("Сверяю сводку админов с CRM…")
     try:
-        result = await asyncio.to_thread(with_db, build_check_text, text)
+        days = [date.fromisoformat(r["date"]) for r in parse_admin(text, date.today())]
+        if not days:
+            raise ValueError("в сводке не нашлось ни одной строки вида «Имя - N»")
     except ValueError as e:
         await message.answer(f"Не получилось разобрать сводку: {e}")
         return
+    await message.answer("Обновляю данные из CRM за период сводки и сверяю, это около полуминуты…")
+    await reload_period(message, min(days), max(days))
+    result = await asyncio.to_thread(with_db, build_check_text, text)
     await send_long(message, f"{result}\n\n🕒 {await asyncio.to_thread(data_loaded_at)}")
 
 

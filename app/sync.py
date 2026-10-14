@@ -205,7 +205,8 @@ def sync_week(crm: CrmClient, conn, monday: date, today: date) -> dict:
                 (c["id"], c_date, schedule_id, c["entity"],
                  teacher_name(c.get("sourceTeacher")), teacher_name(c.get("teacher"))),
             )
-            if c["entity"] == "cancel":
+            if c["entity"] in ("cancel", "transfer"):
+                # перенос: исходное занятие в старое время не проходит, новое разовое уже есть в расписании
                 cur = conn.execute("UPDATE sessions SET cancelled = 1 WHERE schedule_id = ? AND date = ?",
                                    (schedule_id, c_date))
                 if cur.rowcount:
@@ -215,6 +216,8 @@ def sync_week(crm: CrmClient, conn, monday: date, today: date) -> dict:
                     stats["cancel_orphan"] += 1
             elif c["entity"] == "substitute":
                 stats["substitutes"] += 1
+            elif c["entity"] == "extraPlace":
+                pass  # добавили места на занятие — на посещаемость не влияет
             else:
                 log.warning("Неизвестный вид изменения в расписании: %s", c["entity"])
 

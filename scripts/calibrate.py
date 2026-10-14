@@ -66,13 +66,10 @@ def main():
     groups_per_week = stats[stats["week_start"].isin(weeks_with_status)].groupby("week_start").size().mean()
     print(f"\n=== Сколько групп помечено 🔴 в среднем за неделю "
           f"(недели {len(weeks_with_status)}, групп в неделе ≈{groups_per_week:.0f}) ===")
-    for n in (3, 4, 5, 6):
-        r = replay_statuses(stats, config_with(MIN_PEOPLE=n))
-        r = r[r["week_start"].isin(weeks_with_status)]
-        drops = r[r["status"] == STATUS_DROP]
-        by_rule = drops["reason"].str.startswith("меньше").sum()
-        print(f"  меньше {n} чел./занятие: 🔴 {len(drops) / len(weeks_with_status):.1f} в неделю "
-              f"(из них по этому правилу {by_rule / len(weeks_with_status):.1f})")
+    latest = stats[stats["week_start"] == stats["week_start"].max()]
+    for n in (4, 5, 6):
+        small = (latest["small_avg"] < n).sum()
+        print(f"  🧊 маленьких при пороге {n} чел./занятие (за {config.SMALL_GROUP_WEEKS} нед.): {small}")
 
     print("\n=== Статусы с текущими порогами, по неделям ===")
     table = stats[stats["week_start"].isin(weeks_with_status)].pivot_table(
