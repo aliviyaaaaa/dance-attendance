@@ -45,9 +45,11 @@ def mini_db():
 # ---------- сборка данных из SQLite ----------
 
 def test_daily_rows_merge_visits_bookings_and_sessions(mini_db):
+    from datetime import date
+
     rows = pg._daily_rows(mini_db)
     by_key = {(r[0], r[1]): r for r in rows}
-    row = by_key[("2026-10-12", 1)]
+    row = by_key[(date(2026, 10, 12), 1)]
     assert row[2] == 11          # всего посещений
     assert row[3] == 8           # по абонементу
     assert row[4] == 3           # разовые
@@ -57,8 +59,10 @@ def test_daily_rows_merge_visits_bookings_and_sessions(mini_db):
 
 
 def test_daily_rows_count_cancelled_sessions(mini_db):
+    from datetime import date
+
     rows = {(r[0], r[1]): r for r in pg._daily_rows(mini_db)}
-    assert rows[("2026-10-12", 2)][7] == 1
+    assert rows[(date(2026, 10, 12), 2)][7] == 1
 
 
 def test_daily_rows_empty_db_is_empty():
@@ -67,6 +71,58 @@ def test_daily_rows_empty_db_is_empty():
     conn.executescript(db.SCHEMA)
     assert pg._daily_rows(conn) == []
     conn.close()
+
+
+# ---------- типы для Postgres ----------
+
+def test_day_parses_iso_date():
+    from datetime import date
+
+    assert pg._day("2026-10-12") == date(2026, 10, 12)
+    assert pg._day("не дата") is None
+    assert pg._day(None) is None
+
+
+def test_ts_parses_iso_with_offset():
+    from datetime import datetime, timezone
+
+    value = pg._ts("2026-10-14T11:30:44+00:00")
+    assert value == datetime(2026, 10, 14, 11, 30, 44, tzinfo=timezone.utc)
+    assert pg._ts("") is None
+    assert pg._ts("мусор") is None
+
+
+def test_daily_rows_use_date_objects(mini_db):
+    from datetime import date
+
+    rows = pg._daily_rows(mini_db)
+    assert all(isinstance(r[0], date) for r in rows)
+
+
+def test_week_rows_convert_types_for_postgres(mini_db):
+    """В SQLite small — это 0/1, в Postgres это BOOLEAN: нужен настоящий bool."""
+    from datetime import date
+
+    mini_db.execute(
+        "INSERT INTO weekly_group_stats (week_start, group_id, sessions_planned, sessions_cancelled,"
+        " sessions_empty, sessions_off_schedule, sessions_held, visits_total, visits_subscription,"
+        " visits_single, visits_other, visits_on_cancelled, booked, capacity_total, avg_per_session,"
+        " fill_rate, baseline, change_pct, history_weeks, small, small_avg, status, status_reason)"
+        " VALUES ('2026-10-12', 1, 2, 0, 0, 0, 2, 8, 6, 2, 0, 0, 8, 24, 4.0, 0.33, 5.0, -0.2, 4, 1, 4.5,"
+        " '🔴 Просела', 'просела')")
+    mini_db.commit()
+
+    rows = pg._week_rows(mini_db)
+    assert len(rows) == 1
+    assert rows[0][19] is True              # small → bool
+    assert isinstance(rows[0][0], date)     # week_start → date
+
+
+def test_group_rows_convert_updated_at(mini_db):
+    from datetime import datetime, timezone
+
+    rows = pg._group_rows(mini_db)
+    assert rows[0][7] == datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
 
 
 # ---------- настройки ----------

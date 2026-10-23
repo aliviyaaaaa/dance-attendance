@@ -15,7 +15,7 @@ Postgres — второе хранилище, куда выкладываетс�
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app import config, db
 
@@ -37,6 +37,8 @@ def connect():
         config.DATABASE_URL,
         connect_timeout=config.PG_CONNECT_TIMEOUT,
         options=f"-c statement_timeout={config.PG_STATEMENT_TIMEOUT * 1000}",
+        # prepared-статменты выключены: иначе конфликтуют с пуломером (PgBouncer)
+        prepare_threshold=None,
     )
 
 
@@ -166,6 +168,47 @@ GROUP BY date, group_id
 LOADED_DAYS_SQL = "SELECT date, loaded_at FROM loaded_days"
 
 
+def _ts(value):
+    """ISO-строка → datetime с часовым поясом (naive считаем UTC, как и пишет бот).
+
+    None, если разобрать нельзя.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _day(value):
+    """'ГГГГ-ММ-ДД' → date."""
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _group_rows(conn) -> list[tuple]:
+    """Группы студии — с датой в формате Postgres."""
+    return [(r["id"], r["number"], r["style"], r["style_raw"], r["teacher1"], r["teacher2"],
+             r["place_count"], _ts(r["updated_at"]))
+            for r in conn.execute(GROUPS_SQL)]
+
+
+def _week_rows(conn) -> list[tuple]:
+    """Показатели групп по неделям — с честными типами Postgres (в т.ч. small → bool)."""
+    return [(_day(r["week_start"]), r["group_id"], r["sessions_planned"],
+             r["sessions_cancelled"], r["sessions_empty"], r["sessions_off_schedule"],
+             r["sessions_held"], r["visits_total"], r["visits_subscription"],
+             r["visits_single"], r["visits_other"], r["visits_on_cancelled"],
+             r["booked"], r["capacity_total"], r["avg_per_session"], r["fill_rate"],
+             r["baseline"], r["change_pct"], r["history_weeks"], bool(r["small"]),
+             r["small_avg"], r["status"], r["status_reason"])
+            for r in conn.execute(WEEK_STATS_SQL)]
+
+
 def _daily_rows(conn) -> list[tuple]:
     """Собрать посещаемость по дням и группам из трёх таблиц SQLite."""
     visits = {(r["date"], r["group_id"]): (r["visits_total"], r["visits_subscription"], r["visits_single"])
@@ -177,8 +220,8 @@ def _daily_rows(conn) -> list[tuple]:
     for key in set(visits) | set(bookings) | set(sessions):
         v = visits.get(key, (0, 0, 0))
         s = sessions.get(key, (0, 0))
-        rows.append((key[0], key[1], v[0], v[1], v[2], bookings.get(key, 0), s[0], s[1]))
-    return sorted(rows)
+        rows.append((_day(key[0]), key[1], v[0], v[1], v[2], bookings.get(key, 0), s[0], s[1]))
+    return sorted(rows, key=lambda r: (r[0] or date.min, r[1]))
 
 
 # ------------------------------------------------------------- публикация
@@ -255,8 +298,8 @@ def publish(sqlite_conn=None) -> dict:
     conn = sqlite_conn or db.connect()
     try:
         stats_rows = recompute_all(conn)       # недельные показатели со статусами
-        groups = [tuple(r) for r in conn.execute(GROUPS_SQL)]
-        week_stats = [tuple(r) for r in conn.execute(WEEK_STATS_SQL)]
+        groups = _group_rows(conn)
+        week_stats = _week_rows(conn)
         daily = _daily_rows(conn)
         loaded = [(r["date"], r["loaded_at"]) for r in conn.execute(LOADED_DAYS_SQL)]
         last_loaded = max((d for d, _ in loaded), default="")
