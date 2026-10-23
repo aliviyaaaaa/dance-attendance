@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -88,6 +89,29 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL") or (
 LLM_TEMPERATURE = 0.2
 LLM_MAX_TOOL_ROUNDS = 4       # сколько раз подряд модель может обратиться к данным за один вопрос
 LLM_TIMEOUT_SEC = 60
+
+# --- Postgres: постоянное хранилище для дашборда студии ---
+# Рабочее хранилище бота остаётся SQLite (локально и быстро).
+# Postgres нужен, чтобы данные жили не в памяти и не на этом компьютере:
+# из него потом читает дашборд, и он переживает перезапуск бота.
+# Railway даёт DATABASE_URL; на случай если дали только PGHOST/PGUSER/... — собираем строку сами.
+def _pg_dsn() -> str:
+    url = (os.getenv("DATABASE_URL") or "").strip()
+    if url:
+        return url
+    host = (os.getenv("PGHOST") or "").strip()
+    user = (os.getenv("PGUSER") or "").strip()
+    password = os.getenv("PGPASSWORD") or ""
+    dbname = (os.getenv("PGDATABASE") or "").strip()
+    if not (host and user and dbname):
+        return ""
+    port = (os.getenv("PGPORT") or "5432").strip()
+    return f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{dbname}"
+
+
+DATABASE_URL = _pg_dsn()
+PG_CONNECT_TIMEOUT = 15      # секунд на установку соединения
+PG_STATEMENT_TIMEOUT = 60    # секунд на запрос
 
 # Русские названия направлений → как они записаны в CRM (для поиска групп в вопросах к ИИ)
 STYLE_SYNONYMS = {

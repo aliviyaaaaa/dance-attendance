@@ -13,7 +13,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
 
-from app import config, db, llm, sync
+from app import config, db, llm, pg, sync
 from app.admin_check import build_check_text, looks_like_summary, parse_admin
 from app.crm_client import CrmError
 from app.lessons import build_lessons_report, parse_period, recent_pay_periods
@@ -125,11 +125,26 @@ async def send_with_file(message: Message, text: str, excel: str | None):
         await message.answer_document(FSInputFile(excel))
 
 
+async def publish_to_pg():
+    """Выложить снимок данных в Postgres — оттуда читает дашборд.
+
+    Postgres не обязателен: если его нет или он недоступен, бот работает как обычно.
+    """
+    if not pg.enabled():
+        return
+    try:
+        stats = await asyncio.to_thread(pg.publish)
+        log.info("Postgres обновлён: %s", stats)
+    except Exception as e:
+        log.warning("Postgres не обновился (%s) — бот продолжает работать на SQLite", e)
+
+
 # ---------- действия (их вызывают и команды, и кнопки) ----------
 
 async def do_report(message: Message, monday: date):
     await message.answer(f"Собираю отчёт за неделю {monday:%d.%m}…")
     await send_with_file(message, *await asyncio.to_thread(with_db, build_report, monday))
+    await publish_to_pg()
 
 
 async def reload_period(message: Message, start: date, end: date):
@@ -184,6 +199,7 @@ async def do_refresh(message: Message):
     async with crm_lock:
         await message.answer(f"Обновляю данные за последние {config.REFRESH_DAYS} дней из CRM, это около минуты…")
         stats = await asyncio.to_thread(sync.refresh, config.REFRESH_DAYS)
+    await publish_to_pg()
     await message.answer(f"Готово: занятий {stats.get('sessions', 0)}, посещений {stats.get('visits', 0)}, "
                          f"недель {stats.get('weeks', 0)}.", reply_markup=KEYBOARD)
 
