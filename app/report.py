@@ -1,5 +1,6 @@
 """Еженедельный отчёт о посещаемости: текст (для Telegram) и Excel-файл."""
 
+from collections import Counter
 from datetime import date, timedelta
 
 import pandas as pd
@@ -41,7 +42,9 @@ def group_labels(conn, monday: date | None = None) -> dict[int, str]:
             (g["id"], g["id"], until, until)).fetchall()
         when = ", ".join(f"{DAYS[(s['wd'] + 6) % 7]} {hhmm(s['minutes_begin'])}" for s in slots)
         labels[g["id"]] = " · ".join(x for x in (g["style"], g["teacher1"], when) if x)
-    return labels
+    # у старых групп без регулярного расписания названия могут совпасть — добавляем номер группы
+    counts = Counter(labels.values())
+    return {gid: (f"{label} (группа {gid})" if counts[label] > 1 else label) for gid, label in labels.items()}
 
 
 def last_full_week(today: date | None = None) -> date:
@@ -100,7 +103,7 @@ def recent_series(conn, monday: date, weeks: int) -> dict[int, str]:
 
 # ---------- текст ----------
 
-def build_text(conn, monday: date) -> str:
+def build_text(conn, monday: date, ai_comment: str | None = None) -> str:
     sunday = monday + timedelta(days=6)
     header = f"📊 Посещаемость за неделю {monday:%d.%m}–{sunday:%d.%m.%Y}"
     totals = week_totals(conn, monday)
@@ -158,6 +161,9 @@ def build_text(conn, monday: date) -> str:
     if len(new):
         lines.extend(["", f"🆕 Новых групп (меньше {config.NEW_GROUP_MIN_WEEKS} нед. истории): {len(new)} — "
                           "цифры в файле, статус пока не ставим"])
+
+    if ai_comment:
+        lines.extend(["", "💬 Комментарий ИИ", ai_comment])
 
     lines.extend(["", "Полная таблица по всем группам — в файле."])
     return "\n".join(lines)
@@ -228,13 +234,18 @@ def build_excel(conn, monday: date) -> str:
     return str(path)
 
 
-def build_report(conn, monday: date) -> tuple[str, str | None]:
+def build_report(conn, monday: date, with_comment: bool = True) -> tuple[str, str | None]:
     """Пересчитать показатели и собрать отчёт за неделю. Возвращает (текст, путь к Excel или None)."""
     if monday not in loaded_weeks(conn):
         return (f"За неделю {monday:%d.%m}–{monday + timedelta(days=6):%d.%m.%Y} данных нет: "
                 "она ещё не закончилась или не загружена из CRM."), None
     recompute_all(conn)
-    return build_text(conn, monday), build_excel(conn, monday)
+    ai_comment = None
+    if with_comment:
+        from app import llm                         # здесь, чтобы не было циклического импорта
+        if week_totals(conn, monday)["complete"]:   # по неполным данным комментарий не нужен
+            ai_comment = llm.comment(conn, monday)
+    return build_text(conn, monday, ai_comment), build_excel(conn, monday)
 
 
 def parse_date(text: str, today: date | None = None) -> date:

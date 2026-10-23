@@ -1,8 +1,12 @@
-"""Клиент Impulse CRM: вход, сессия, разрешённые эндпоинты, повторы.
+"""Клиент Impulse CRM: вход, разрешённые эндпоинты, повторы.
 
-API неофициальный (внутренний JSON-API веб-интерфейса), поэтому:
+Официальный API Impulse (документация: tech.impulsecrm.ru/api). Вход — API-ключ пользователя
+analytics_bot (заголовок «Authorization: Basic <ключ>»), запасной вариант — логин и пароль с сессией.
+Часть нужных запросов (schedule/places, schedule/changes, check_visits/visits) в документации
+не описана, но работает по ключу (проверено 15.10.2026). Об изменениях API Impulse не предупреждает.
+
 - вызывать можно только эндпоинты из ALLOWED_ENDPOINTS (только чтение);
-- пароль и id сессии никогда не попадают в логи и сообщения об ошибках.
+- ключ, пароль и id сессии никогда не попадают в логи и сообщения об ошибках.
 """
 
 import calendar
@@ -66,9 +70,11 @@ def week_range(monday: date, sunday: date) -> dict:
 
 class CrmClient:
     def __init__(self):
-        if not config.IMPULSE_LOGIN or not config.IMPULSE_PASSWORD:
-            raise CrmError(LOGIN_ENDPOINT, "в .env не заданы IMPULSE_LOGIN / IMPULSE_PASSWORD")
-        self._http = httpx.Client(timeout=config.HTTP_TIMEOUT_SEC)
+        self._api_key = config.IMPULSE_API_KEY
+        if not self._api_key and not (config.IMPULSE_LOGIN and config.IMPULSE_PASSWORD):
+            raise CrmError(LOGIN_ENDPOINT, "в .env не задан IMPULSE_API_KEY (или IMPULSE_LOGIN / IMPULSE_PASSWORD)")
+        headers = {"Authorization": f"Basic {self._api_key}"} if self._api_key else {}
+        self._http = httpx.Client(timeout=config.HTTP_TIMEOUT_SEC, headers=headers)
         self._session_id = None
 
     def close(self):
@@ -120,10 +126,27 @@ class CrmClient:
         self._session_id = session
         log.info("CRM: вход выполнен")
 
+    def _call_with_key(self, endpoint: str, body: dict):
+        resp = self._send(endpoint, json=body)
+        if resp.status_code == 401:
+            raise CrmError(endpoint, "API-ключ не принят — возможно, его обновили в CRM; "
+                                     "вставьте новый ключ analytics_bot в .env")
+        try:
+            data = resp.json()
+        except ValueError:
+            raise CrmError(endpoint, f"ответ не JSON (HTTP {resp.status_code})")
+        if isinstance(data, dict) and data.get("message") == AUTH_REQUIRED_MESSAGE:
+            raise CrmError(endpoint, "API-ключ не принят — возможно, его обновили в CRM")
+        if resp.status_code >= 400:
+            raise CrmError(endpoint, f"HTTP {resp.status_code}")
+        return data
+
     def call(self, endpoint: str, body: dict):
         """Вызов разрешённого эндпоинта. При истёкшей сессии — один повторный вход."""
         if endpoint not in ALLOWED_ENDPOINTS:
             raise CrmError(endpoint, "эндпоинт не входит в разрешённый список")
+        if self._api_key:
+            return self._call_with_key(endpoint, body)
         if self._session_id is None:
             self.login()
 

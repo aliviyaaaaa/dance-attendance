@@ -102,6 +102,19 @@ CREATE TABLE IF NOT EXISTS weekly_group_stats (
     PRIMARY KEY (week_start, group_id)
 );
 
+-- Вопросы к ИИ: для разбора качества и для ВКР (без данных клиентов)
+CREATE TABLE IF NOT EXISTS questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    asked_at    TEXT NOT NULL,
+    model       TEXT,
+    question    TEXT NOT NULL,
+    tools       TEXT,             -- какие инструменты вызвала модель (JSON)
+    rounds      INTEGER,
+    answer_len  INTEGER,
+    error       TEXT,
+    duration_ms INTEGER
+);
+
 -- Какие дни уже загружены и когда (для проверки полноты)
 CREATE TABLE IF NOT EXISTS loaded_days (
     date      TEXT PRIMARY KEY,

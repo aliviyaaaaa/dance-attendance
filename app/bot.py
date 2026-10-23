@@ -13,7 +13,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
 
-from app import config, db, sync
+from app import config, db, llm, sync
 from app.admin_check import build_check_text, looks_like_summary, parse_admin
 from app.crm_client import CrmError
 from app.lessons import build_lessons_report, parse_period, recent_pay_periods
@@ -52,6 +52,9 @@ HELP = f"""Я считаю посещаемость групп студии по
 {BTN_PAY} — посещения по каждому занятию и зарплата педагогов за расчётный период
 {BTN_CHECK} — сверка сводки админов с CRM
 {BTN_REFRESH} — подтянуть свежие данные из CRM (последние {config.REFRESH_DAYS} дней)
+
+Можно задать вопрос своими словами: «почему просел Afro?», «как менялся Hip-Hop за 2 месяца?»,
+«какие группы растут?» — отвечу по посчитанным данным (если подключён ИИ).
 
 Команды тоже работают: /report 28.09, /visits 16.09-30.09, /visits сентябрь.
 Внизу каждого ответа — время, на которое загружены данные."""
@@ -315,9 +318,20 @@ async def summary_text(message: Message):
     await do_check(message, message.text)
 
 
+@dp.message(F.text)
+async def question_text(message: Message):
+    if not llm.enabled():
+        await message.answer("Отвечать на вопросы я пока не умею: не подключён ИИ. "
+                             "Пользуйтесь кнопками внизу.", reply_markup=KEYBOARD)
+        return
+    await message.answer("Смотрю данные…")
+    answer, _ = await asyncio.to_thread(llm.ask, message.text)
+    await send_long(message, answer)
+
+
 @dp.message()
-async def other_text(message: Message):
-    await message.answer("Пока я понимаю только кнопки и команды.", reply_markup=KEYBOARD)
+async def other_message(message: Message):
+    await message.answer("Я понимаю текст, кнопки и команды.", reply_markup=KEYBOARD)
 
 
 @dp.errors()

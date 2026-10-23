@@ -13,6 +13,7 @@ load_dotenv(PROJECT_DIR / ".env")
 IMPULSE_BASE_URL = os.getenv("IMPULSE_BASE_URL", "").rstrip("/")
 IMPULSE_LOGIN = os.getenv("IMPULSE_LOGIN", "")
 IMPULSE_PASSWORD = os.getenv("IMPULSE_PASSWORD", "")
+IMPULSE_API_KEY = os.getenv("IMPULSE_API_KEY", "").strip()   # официальный вход; если задан — логин и пароль не нужны
 BRANCH_ID = 1
 
 # Сетевые параметры: таймаут, повторы и пауза между запросами, чтобы не нагружать CRM
@@ -74,3 +75,25 @@ PAY_RATES = [
 # Хранится в teacher_aliases.json рядом с проектом, формат: {"Варя": "Иванова В."}
 _aliases_file = PROJECT_DIR / "teacher_aliases.json"   # не публикуется: см. teacher_aliases.example.json
 TEACHER_ALIASES = json.loads(_aliases_file.read_text(encoding="utf-8")) if _aliases_file.exists() else {}
+
+# --- LLM: комментарий к отчёту и ответы на вопросы ---
+# По умолчанию Yandex AI Studio (OpenAI-совместимый API, серверы в РФ, оплата в рублях).
+# Чтобы сменить провайдера, достаточно поменять эти настройки в .env.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "yandex")
+LLM_MODEL = os.getenv("LLM_MODEL") or "aliceai-llm-flash"
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_FOLDER_ID = os.getenv("LLM_FOLDER_ID", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or (
+    "https://ai.api.cloud.yandex.net/v1" if LLM_PROVIDER == "yandex" else "")
+LLM_TEMPERATURE = 0.2
+LLM_MAX_TOOL_ROUNDS = 4       # сколько раз подряд модель может обратиться к данным за один вопрос
+LLM_TIMEOUT_SEC = 60
+
+# Русские названия направлений → как они записаны в CRM (для поиска групп в вопросах к ИИ)
+STYLE_SYNONYMS = {
+    "хип хоп": "hip hop", "хипхоп": "hip hop", "афро": "afro", "хорео": "choreo", "хореограф": "choreo",
+    "контемп": "contemporary", "стретч": "stretching", "растяжк": "stretching", "хилс": "high heels",
+    "хай хилс": "high heels", "дэнсхолл": "dancehall", "дансхолл": "dancehall", "денсхолл": "dancehall",
+    "вог": "vogue", "джаз фанк": "jazz funk", "джазфанк": "jazz funk", "герли": "girly", "гёрли": "girly",
+    "хаус": "house", "авторск": "author's",
+}

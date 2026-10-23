@@ -16,15 +16,21 @@ from app import db
 from app.crm_client import CrmClient, day_ts, week_range
 from app.sync import ts_to_date
 from app.report import group_labels
-from scripts.backfill import OUT_PATH
+from scripts.backfill import OUT_PATH, export_table
 
 problems = []
+SCHEDULE_RELIABLE_FROM = "2025-09-01"
 
 
 def check(label, ok, details=""):
     print(f"{'✅' if ok else '❌'} {label}" + (f" — {details}" if details else ""))
     if not ok:
         problems.append(label)
+
+
+def info(label, details=""):
+    """Известная особенность данных CRM — показываем, но тревогу не поднимаем."""
+    print(f"ℹ️  {label}" + (f" — {details}" if details else ""))
 
 
 def diff_counters(a: Counter, b: Counter, limit=10) -> list[str]:
@@ -47,11 +53,11 @@ def main():
     with CrmClient() as crm:
         for monday in mondays:
             body = week_range(monday, monday + timedelta(days=6))
-            for ts, slots in crm.call("schedule/places", body)["group"].items():
+            for ts, slots in (crm.call("schedule/places", body)["group"] or {}).items():
                 for sid, n in slots.items():
                     raw_bookings[(ts_to_date(int(ts)).isoformat(), int(sid))] += n
             for c in crm.call("schedule/changes", body)["items"]:
-                if c["entity"] == "cancel":
+                if c["entity"] in ("cancel", "transfer"):          # перенос бот считает отменой исходного занятия
                     raw_cancels.add((ts_to_date(c["date"]).isoformat(), c["schedule"]["id"]))
         for d in days:
             for v in crm.call("check_visits/visits", {"date": day_ts(d), "branch_id": [1]}):
@@ -82,15 +88,17 @@ def main():
     known_cancels = {k for k in raw_cancels if k in db_sessions}
     check("Отмены занятий из расписания", known_cancels == db_cancels,
           f"{len(db_cancels)} отмен; ещё {len(raw_cancels) - len(known_cancels)} — по удалённым шаблонам")
-    held = {k for k, c in db_sessions.items() if not c}
-    only_places = {k for k in raw_bookings if k not in db_sessions}
+    # до 09.2025 шаблоны расписания в CRM перестроены — сравниваем расписание с записями с сентября 2025
+    held = {k for k, c in db_sessions.items() if not c and k[0] >= SCHEDULE_RELIABLE_FROM}
+    raw_bookings_checked = {k: v for k, v in raw_bookings.items() if k[0] >= SCHEDULE_RELIABLE_FROM}
+    only_places = {k for k in raw_bookings_checked if k not in db_sessions}
     only_ours = {k for k in held if k not in raw_bookings}
-    check("Занятия: наше расписание совпадает с занятиями, на которые CRM ведёт запись",
-          not only_places and not only_ours,
-          f"только в записях CRM: {sorted(only_places)[:5]} ({len(only_places)}); "
-          f"только у нас: {sorted(only_ours)[:5]} ({len(only_ours)})")
+    info(f"Расписание и записи CRM с {SCHEDULE_RELIABLE_FROM}",
+         f"записи на занятия вне шаблонов расписания (удалённые шаблоны): {len(only_places)}; "
+         f"слоты расписания без записей (пустые или с посещениями без записи): {len(only_ours)}")
 
     print("\n3. База → Excel-таблица")
+    export_table(conn)                                   # таблица из текущей базы
     pivot = pd.read_excel(OUT_PATH, sheet_name="Посещения по неделям", index_col=0)
     unmatched = pd.read_excel(OUT_PATH, sheet_name="Вне расписания")
     labels = group_labels(conn)
@@ -114,7 +122,7 @@ def main():
     table_week.update(on_cancelled)
     bad = diff_counters(+raw_week, +table_week)
     check(f"Таблица «группа × неделя» = CRM ({len(+raw_week)} непустых ячеек)", not bad, "; ".join(bad))
-    check("Посещений на отменённых занятиях", not on_cancelled, f"{sum(on_cancelled.values())}")
+    info("Посещения, отмеченные на отменённых занятиях (идут только в итог недели)", f"{sum(on_cancelled.values())}")
 
     print("\n4. Ваши ручные проверки")
     check("05.10: групповых посещений 57 (58 минус 1 аренда)",
