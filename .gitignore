@@ -17,3 +17,6 @@ reports/
 
 # macOS
 .DS_Store
+
+# Локальный автозапуск: абсолютные пути этого компьютера
+local.garage.attendance.plist

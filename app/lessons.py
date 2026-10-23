@@ -151,7 +151,12 @@ def lesson_rows(conn, start: date, end: date) -> pd.DataFrame:
         return df
     df["joint"] = False
     df = merge_joint_lessons(df)
-    df["Оплата, ₽"] = [rate_for(int(n)) if counts else None for n, counts in zip(df["Человек"], df["counts"])]
+    # После объединения групп: максимум суммарных записей и суммарных посещений.
+    # Фактические посещения сохраняем отдельно для аналитики.
+    df["Для зарплаты"] = [max(int(n), int(booked or 0)) if counts else None
+                          for n, booked, counts in zip(df["Человек"], df["Записались"], df["counts"])]
+    df["Оплата, ₽"] = [rate_for(int(n)) if counts else None
+                       for n, counts in zip(df["Для зарплаты"], df["counts"])]
     return df.sort_values(["date", "minutes", "Направление"], na_position="last").reset_index(drop=True)
 
 
@@ -175,6 +180,7 @@ def build_text(rows: pd.DataFrame, start: date, end: date, missing: list[date]) 
     if rows.empty:
         return "\n".join(lines + ["", "Занятий за период нет."])
 
+    lines.append("Для зарплаты берём большее из записавшихся и отмеченных; это оценка, не число уникальных людей.")
     for day, day_rows in rows[rows["date"].notna()].groupby("date", sort=True):
         d = date.fromisoformat(day)
         lines += ["", f"{d:%d.%m}, {DAYS[d.weekday()]}"]
@@ -187,21 +193,27 @@ def build_text(rows: pd.DataFrame, start: date, end: date, missing: list[date]) 
             pay = ""
             if r["counts"]:
                 pay = f" · {rub(r['Оплата, ₽'])}" if pd.notna(r["Оплата, ₽"]) else " · ❓ставка не задана"
-            lines.append(f"• {hhmm(r['minutes'])} {r['Направление']} · {who} — {r['Человек']}{pay}{mark}")
+            total = str(int(r["Для зарплаты"])) if r["counts"] else "не учитывается"
+            lines.append(f"• {hhmm(r['minutes'])} {r['Направление']} · {who} — "
+                         f"для зарплаты: {total}; записались: {int(r['Записались'])}; "
+                         f"отмечены: {int(r['Человек'])}{pay}{mark}")
 
     extra = rows[rows["date"].isna()]
     for _, r in extra.iterrows():
         lines += ["", f"⚠️ {r['Направление']} · {r['Вёл']}: {r['Человек']} — {r['Статус']}"]
 
     counted = rows[rows["counts"]]
-    totals = counted.groupby("Вёл").agg(lessons=("Человек", "size"), people=("Человек", "sum"),
+    totals = counted.groupby("Вёл").agg(lessons=("Человек", "size"), people=("Для зарплаты", "sum"),
+                                        attended=("Человек", "sum"), booked=("Записались", "sum"),
                                         pay=("Оплата, ₽", "sum"), no_rate=("Оплата, ₽", lambda x: x.isna().sum()))
     lines += ["", "💰 Итого по педагогам:"]
     for teacher, t in totals.sort_index().iterrows():
         warn = f" (+{t['no_rate']:.0f} зан. без ставки ❓)" if t["no_rate"] else ""
-        lines.append(f"• {teacher}: {rub(t['pay'])} — занятий {int(t['lessons'])}, человек {int(t['people'])}{warn}")
+        lines.append(f"• {teacher}: {rub(t['pay'])} — занятий {int(t['lessons'])}, для зарплаты {int(t['people'])}, "
+                     f"записались {int(t['booked'])}, отмечены {int(t['attended'])}{warn}")
     lines += ["", f"Всего: {rub(counted['Оплата, ₽'].sum())} — занятий {len(counted)}, "
-                  f"человек {int(counted['Человек'].sum())}"]
+                  f"для зарплаты {int(counted['Для зарплаты'].sum())}, "
+                  f"записались {int(counted['Записались'].sum())}, отмечены {int(counted['Человек'].sum())}"]
     if counted["Оплата, ₽"].isna().any():
         lines.append("❓ — число людей вне таблицы ставок (0 или больше 29): посчитайте вручную")
     return "\n".join(lines)
@@ -214,10 +226,18 @@ def build_excel(rows: pd.DataFrame, start: date, end: date) -> str:
     table.insert(2, "Время", table["minutes"].map(hhmm))
     table = table.drop(columns=["date", "minutes", "group_id", "counts", "joint"])
 
+    table = table.rename(columns={"Человек": "Отмечены", "по абонементу": "Отмечены по абонементу",
+                                  "разовых": "Отмечены разовые"})
+    columns = list(table.columns)
+    columns.remove("Для зарплаты")
+    columns.insert(columns.index("Отмечены"), "Для зарплаты")
+    table = table[columns]
+
     counted = rows[rows["counts"]]
     by_teacher = counted.groupby("Вёл").agg(**{
-        "Занятий": ("Человек", "size"), "Человек всего": ("Человек", "sum"),
-        "В среднем на занятии": ("Человек", "mean"),
+        "Занятий": ("Человек", "size"), "Для зарплаты всего": ("Для зарплаты", "sum"),
+        "Записались всего": ("Записались", "sum"), "Отмечены всего": ("Человек", "sum"),
+        "Отмечены в среднем на занятии": ("Человек", "mean"),
         "Из них замен": ("Замена за", lambda x: (x != "").sum()),
         "Объединённых": ("joint", "sum"),
         "К выплате, ₽": ("Оплата, ₽", "sum"),
