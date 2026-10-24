@@ -351,6 +351,89 @@ def publish(sqlite_conn=None) -> dict:
     return result
 
 
+def dashboard_summary() -> str:
+    """Короткая сводка из Postgres — для ответа бота в Telegram.
+
+    Читает из облачной базы, а не из локального SQLite: это проверка того,
+    что данные действительно лежат в базе и переживают перезапуск.
+    """
+    pg = connect()
+    try:
+        with pg.cursor() as cur:
+            cur.execute("SELECT MAX(week_start) FROM public.group_week_stats")
+            week = cur.fetchone()[0]
+            if week is None:
+                return "В облачной базе пока нет недельных показателей."
+
+            cur.execute("""SELECT COUNT(*), COALESCE(SUM(visits_total), 0),
+                                  COALESCE(SUM(visits_subscription), 0),
+                                  COALESCE(SUM(visits_single), 0),
+                                  COALESCE(SUM(booked), 0)
+                           FROM public.group_week_stats WHERE week_start = %s""", (week,))
+            groups, visits, sub, single, booked = cur.fetchone()
+
+            cur.execute("""SELECT g.style, g.teacher1, w.avg_per_session, w.baseline,
+                                  w.change_pct, w.status
+                           FROM public.group_week_stats w
+                           JOIN public.studio_groups g ON g.group_id = w.group_id
+                           WHERE w.week_start = %s AND w.status LIKE %s
+                           ORDER BY w.change_pct""", (week, "%Просела%"))
+            dropped = cur.fetchall()
+
+            cur.execute("""SELECT g.style, g.teacher1, w.avg_per_session, w.baseline,
+                                  w.change_pct, w.status
+                           FROM public.group_week_stats w
+                           JOIN public.studio_groups g ON g.group_id = w.group_id
+                           WHERE w.week_start = %s AND w.status LIKE %s
+                           ORDER BY w.change_pct DESC""", (week, "%Растёт%"))
+            grown = cur.fetchall()
+
+            cur.execute("SELECT COUNT(*) FROM public.studio_groups")
+            total_groups = cur.fetchone()[0]
+
+            cur.execute("""SELECT date, SUM(visits_total), SUM(booked)
+                           FROM public.attendance_daily
+                           WHERE date > %s - INTERVAL '7 days'
+                           GROUP BY date ORDER BY date DESC""", (week,))
+            daily = cur.fetchall()[:7]
+
+            cur.execute("SELECT value FROM public.studio_meta WHERE key = 'last_loaded_day'")
+            row = cur.fetchone()
+            loaded = row[0] if row else "—"
+    finally:
+        pg.close()
+
+    out = [
+        "📦 Данные из облачной базы Postgres",
+        "",
+        f"Неделя: {week:%d.%m.%Y}   ·   данных в базе по: {loaded}",
+        "",
+        f"Групп на этой неделе: {groups}   (всего в базе: {total_groups})",
+        f"Посещений за неделю: {visits}   (по абонементу {sub}, разовых {single})",
+        f"Записей: {booked}",
+        "",
+    ]
+    if dropped:
+        out.append("🔴 Просели:")
+        for style, teacher, avg, base, pct, status in dropped:
+            out.append(f"  • {style} · {teacher} — {avg:.1f} чел/занятие "
+                       f"(было {base:.1f}, {pct:+.0%})")
+        out.append("")
+    if grown:
+        out.append("🟢 Растут:")
+        for style, teacher, avg, base, pct, status in grown:
+            out.append(f"  • {style} · {teacher} — {avg:.1f} чел/занятие "
+                       f"(было {base:.1f}, {pct:+.0%})")
+        out.append("")
+    if daily:
+        out.append("Посещаемость по дням:")
+        for d, v, b in daily:
+            out.append(f"  {d:%d.%m} — посещений {v}, записей {b}")
+    out.append("")
+    out.append("Читается напрямую из Postgres, не из памяти бота.")
+    return "\n".join(out)
+
+
 def check() -> dict:
     """Что сейчас лежит в Postgres — для проверки «данные на месте»."""
     pg = connect()

@@ -154,3 +154,12 @@ def test_publish_and_check_roundtrip():
     info = pg.check()
     assert info["groups"] >= 0
     assert info["last_loaded_day"] is not None
+
+
+@pytest.mark.skipif(not pg.enabled(), reason="не задан DATABASE_URL — проверка с сервером пропущена")
+def test_dashboard_summary_reads_from_postgres():
+    """Сводка для /db должна собираться из облачной базы и быть читаемой."""
+    text = pg.dashboard_summary()
+    assert "Postgres" in text
+    assert "Групп" in text
+    assert "Читается напрямую из Postgres" in text

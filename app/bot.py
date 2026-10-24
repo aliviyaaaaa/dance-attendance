@@ -42,6 +42,7 @@ COMMANDS = [
     BotCommand(command="visits", description="Посещения по занятиям и зарплата"),
     BotCommand(command="check", description="Сверка сводки админов с CRM"),
     BotCommand(command="refresh", description="Обновить данные из CRM"),
+    BotCommand(command="db", description="Данные из облачной базы Postgres"),
     BotCommand(command="start", description="Справка"),
 ]
 
@@ -325,6 +326,22 @@ async def cmd_check(message: Message, command: CommandObject):
         await message.answer(CHECK_HELP)
         return
     await do_check(message, command.args)
+
+
+@dp.message(Command("db"))
+async def cmd_db(message: Message):
+    """Показать данные из облачной базы Postgres."""
+    if not pg.enabled():
+        await message.answer("Облачная база не подключена: в .env нет DATABASE_URL.")
+        return
+    await message.answer("Читаю из облачной базы…")
+    try:
+        text = await asyncio.to_thread(pg.dashboard_summary)
+    except Exception as e:
+        log.warning("Postgres не прочитан: %s", e)
+        await message.answer(f"Не смог прочитать облачную базу: {e}")
+        return
+    await message.answer(text)
 
 
 # ---------- обычный текст ----------
