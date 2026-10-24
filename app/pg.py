@@ -47,9 +47,7 @@ def connect():
 # ---------------------------------------------------------------- схема
 
 SCHEMA_SQL = """
-CREATE SCHEMA IF NOT EXISTS garage;
-
-CREATE TABLE IF NOT EXISTS garage.studio_groups (
+CREATE TABLE IF NOT EXISTS public.studio_groups (
     group_id    INTEGER PRIMARY KEY,
     number      TEXT,
     style       TEXT,
@@ -60,7 +58,7 @@ CREATE TABLE IF NOT EXISTS garage.studio_groups (
     updated_at  TIMESTAMPTZ
 );
 
-CREATE TABLE IF NOT EXISTS garage.group_week_stats (
+CREATE TABLE IF NOT EXISTS public.group_week_stats (
     week_start            DATE NOT NULL,
     group_id              INTEGER NOT NULL,
     sessions_planned      INTEGER NOT NULL DEFAULT 0,
@@ -87,7 +85,7 @@ CREATE TABLE IF NOT EXISTS garage.group_week_stats (
     PRIMARY KEY (week_start, group_id)
 );
 
-CREATE TABLE IF NOT EXISTS garage.attendance_daily (
+CREATE TABLE IF NOT EXISTS public.attendance_daily (
     date                DATE NOT NULL,
     group_id            INTEGER NOT NULL,
     visits_total        INTEGER NOT NULL DEFAULT 0,
@@ -99,29 +97,29 @@ CREATE TABLE IF NOT EXISTS garage.attendance_daily (
     PRIMARY KEY (date, group_id)
 );
 
-CREATE TABLE IF NOT EXISTS garage.studio_meta (
+CREATE TABLE IF NOT EXISTS public.studio_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 
-CREATE INDEX IF NOT EXISTS garage_idx_week_stats_group ON garage.group_week_stats (group_id, week_start DESC);
-CREATE INDEX IF NOT EXISTS garage_idx_daily_group ON garage.attendance_daily (group_id, date DESC);
+CREATE INDEX IF NOT EXISTS public_idx_week_stats_group ON public.group_week_stats (group_id, week_start DESC);
+CREATE INDEX IF NOT EXISTS public_idx_daily_group ON public.attendance_daily (group_id, date DESC);
 
-CREATE OR REPLACE VIEW garage.dashboard_groups AS
+CREATE OR REPLACE VIEW public.dashboard_groups AS
 SELECT w.week_start, w.group_id, g.style, g.teacher1, g.teacher2, g.place_count,
        w.avg_per_session, w.baseline, w.change_pct, w.status, w.status_reason,
        w.small, w.small_avg, w.visits_total, w.visits_subscription, w.visits_single,
        w.booked, w.sessions_held, w.sessions_cancelled, w.sessions_empty,
        w.capacity_total, w.fill_rate, w.history_weeks
-FROM garage.group_week_stats w
-JOIN garage.studio_groups g ON g.group_id = w.group_id;
+FROM public.group_week_stats w
+JOIN public.studio_groups g ON g.group_id = w.group_id;
 
-CREATE OR REPLACE VIEW garage.dashboard_daily AS
+CREATE OR REPLACE VIEW public.dashboard_daily AS
 SELECT d.date, d.group_id, g.style, g.teacher1,
        d.visits_total, d.visits_subscription, d.visits_single, d.booked,
        d.sessions_planned, d.sessions_cancelled
-FROM garage.attendance_daily d
-JOIN garage.studio_groups g ON g.group_id = d.group_id;
+FROM public.attendance_daily d
+JOIN public.studio_groups g ON g.group_id = d.group_id;
 """
 
 
@@ -237,7 +235,7 @@ def _daily_rows(conn) -> list[tuple]:
 # ------------------------------------------------------------- публикация
 
 UPSERT_GROUPS = """
-INSERT INTO garage.studio_groups (group_id, number, style, style_raw, teacher1, teacher2,
+INSERT INTO public.studio_groups (group_id, number, style, style_raw, teacher1, teacher2,
                             place_count, updated_at)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (group_id) DO UPDATE SET
@@ -247,7 +245,7 @@ ON CONFLICT (group_id) DO UPDATE SET
 """
 
 UPSERT_WEEK_STATS = """
-INSERT INTO garage.group_week_stats (week_start, group_id, sessions_planned, sessions_cancelled,
+INSERT INTO public.group_week_stats (week_start, group_id, sessions_planned, sessions_cancelled,
     sessions_empty, sessions_off_schedule, sessions_held, visits_total, visits_subscription,
     visits_single, visits_other, visits_on_cancelled, booked, capacity_total,
     avg_per_session, fill_rate, baseline, change_pct, history_weeks, small, small_avg,
@@ -278,7 +276,7 @@ ON CONFLICT (week_start, group_id) DO UPDATE SET
 """
 
 UPSERT_DAILY = """
-INSERT INTO garage.attendance_daily (date, group_id, visits_total, visits_subscription,
+INSERT INTO public.attendance_daily (date, group_id, visits_total, visits_subscription,
                                visits_single, booked, sessions_planned, sessions_cancelled)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (date, group_id) DO UPDATE SET
@@ -291,7 +289,7 @@ ON CONFLICT (date, group_id) DO UPDATE SET
 """
 
 UPSERT_META = """
-INSERT INTO garage.studio_meta (key, value) VALUES (%s, %s)
+INSERT INTO public.studio_meta (key, value) VALUES (%s, %s)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
 """
 
@@ -360,23 +358,23 @@ def check() -> dict:
         with pg.cursor() as cur:
             out = {}
             for label, sql in [
-                ("groups", "SELECT COUNT(*) FROM garage.studio_groups"),
-                ("week_stats", "SELECT COUNT(*) FROM garage.group_week_stats"),
-                ("daily_rows", "SELECT COUNT(*) FROM garage.attendance_daily"),
-                ("loaded_days", "SELECT COUNT(*) FROM garage.studio_meta WHERE key = 'last_loaded_day'"),
+                ("groups", "SELECT COUNT(*) FROM public.studio_groups"),
+                ("week_stats", "SELECT COUNT(*) FROM public.group_week_stats"),
+                ("daily_rows", "SELECT COUNT(*) FROM public.attendance_daily"),
+                ("loaded_days", "SELECT COUNT(*) FROM public.studio_meta WHERE key = 'last_loaded_day'"),
             ]:
                 cur.execute(sql)
                 out[label] = cur.fetchone()[0]
-            cur.execute("SELECT value FROM garage.studio_meta WHERE key = 'last_loaded_day'")
+            cur.execute("SELECT value FROM public.studio_meta WHERE key = 'last_loaded_day'")
             row = cur.fetchone()
             out["last_loaded_day"] = row[0] if row else None
-            cur.execute("SELECT value FROM garage.studio_meta WHERE key = 'published_at'")
+            cur.execute("SELECT value FROM public.studio_meta WHERE key = 'published_at'")
             row = cur.fetchone()
             out["published_at"] = row[0] if row else None
-            cur.execute("""SELECT week_start, COUNT(*) FROM garage.group_week_stats
+            cur.execute("""SELECT week_start, COUNT(*) FROM public.group_week_stats
                            GROUP BY week_start ORDER BY week_start DESC LIMIT 5""")
             out["last_weeks"] = cur.fetchall()
-            cur.execute("""SELECT COUNT(*) FROM garage.group_week_stats WHERE status LIKE '%Просела'""")
+            cur.execute("""SELECT COUNT(*) FROM public.group_week_stats WHERE status LIKE '%Просела'""")
             out["dropped_rows"] = cur.fetchone()[0]
     finally:
         pg.close()
