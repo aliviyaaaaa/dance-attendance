@@ -13,11 +13,13 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
 
-from app import config, db, llm, pg, sync
+from app import config, db, llm, pg, scheduler, sync
 from app.admin_check import build_check_text, looks_like_summary, parse_admin
 from app.crm_client import CrmError
 from app.lessons import build_lessons_report, parse_period, recent_pay_periods
+from app.locks import crm_lock
 from app.metrics import STATUS_CANCELLED, STATUS_DROP, STATUS_GROW, STATUS_NEW, STATUS_OK, STATUS_WATCH
+from app.publish import publish_to_pg
 from app.report import build_report, fmt_num, last_full_week, parse_week_arg, week_stats
 
 log = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ COMMANDS = [
     BotCommand(command="check", description="Сверка сводки админов с CRM"),
     BotCommand(command="refresh", description="Обновить данные из CRM"),
     BotCommand(command="db", description="Данные из облачной базы Postgres"),
+    BotCommand(command="status", description="Что я делаю сам: расписание и свежесть данных"),
     BotCommand(command="start", description="Справка"),
 ]
 
@@ -54,6 +57,10 @@ HELP = f"""Я считаю посещаемость групп студии по
 {BTN_CHECK} — сверка сводки админов с CRM
 {BTN_REFRESH} — подтянуть свежие данные из CRM (последние {config.REFRESH_DAYS} дней)
 
+Я работаю и сам, без вашей помощи: каждый день в {config.SYNC_HOUR:02d}:{config.SYNC_MINUTE:02d} обновляю
+данные из CRM, а в {config.REPORT_HOUR:02d}:{config.REPORT_MINUTE:02d} по понедельникам присылаю отчёт за неделю.
+Команда /status покажет, что я делаю и когда будет следующее обновление.
+
 Можно задать вопрос своими словами: «почему просел Afro?», «как менялся Hip-Hop за 2 месяца?»,
 «какие группы растут?» — отвечу по посчитанным данным (если подключён ИИ).
 
@@ -64,7 +71,6 @@ CHECK_HELP = ("Скопируйте сводку админов и пришли�
               "что это сводка, и сверю с CRM. Например:\n\n16.09\nАня - 5\nМаша (замена Оля) - 4\nЛена - 10")
 
 dp = Dispatcher()
-crm_lock = asyncio.Lock()   # не запускать две выгрузки из CRM одновременно
 
 
 # ---------- белый список ----------
@@ -124,20 +130,6 @@ async def send_with_file(message: Message, text: str, excel: str | None):
     await send_long(message, f"{text}\n\n🕒 {await asyncio.to_thread(data_loaded_at)}")
     if excel:
         await message.answer_document(FSInputFile(excel))
-
-
-async def publish_to_pg():
-    """Выложить снимок данных в Postgres — оттуда читает дашборд.
-
-    Postgres не обязателен: если его нет или он недоступен, бот работает как обычно.
-    """
-    if not pg.enabled():
-        return
-    try:
-        stats = await asyncio.to_thread(pg.publish)
-        log.info("Postgres обновлён: %s", stats)
-    except Exception as e:
-        log.warning("Postgres не обновился (%s) — бот продолжает работать на SQLite", e)
 
 
 # ---------- действия (их вызывают и команды, и кнопки) ----------
@@ -344,6 +336,12 @@ async def cmd_db(message: Message):
     await message.answer(text)
 
 
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    """Что агент делает сам: расписание, свежесть данных, состояние облачной базы."""
+    await message.answer("\n".join(await asyncio.to_thread(scheduler.status_lines)))
+
+
 # ---------- обычный текст ----------
 
 @dp.message(F.text.func(looks_like_summary))
@@ -392,7 +390,18 @@ async def main():
     me = await bot.get_me()
     log.info("Бот @%s запущен. В белом списке: %d пользователь(ей)", me.username,
              len(config.TELEGRAM_ALLOWED_USER_IDS))
-    await dp.start_polling(bot)
+    task = None
+    if config.SCHEDULE_ENABLED:
+        task = asyncio.create_task(scheduler.run(bot))
+        log.info("Расписание включено: автосинхронизация в %02d:%02d, отчёт по %s в %02d:%02d",
+                 config.SYNC_HOUR, config.SYNC_MINUTE,
+                 scheduler.WEEKDAY_NAMES.get(config.REPORT_WEEKDAY, "—"),
+                 config.REPORT_HOUR, config.REPORT_MINUTE)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        if task:
+            task.cancel()
 
 
 if __name__ == "__main__":

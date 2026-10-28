@@ -1,0 +1,19 @@
+# Запуск бота на сервере через Docker:
+#   docker compose up -d
+# Файл .env лежит рядом (в git его нет) — это все ключи бота.
+services:
+  bot:
+    build: .
+    image: garage-attendance-bot:latest
+    container_name: garage-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

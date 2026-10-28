@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -60,6 +61,22 @@ TELEGRAM_ALLOWED_USER_IDS = {
     int(x) for x in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").replace(" ", "").split(",") if x.isdigit()
 }
 REFRESH_DAYS = 14             # при обновлении перезагружаем последние 14 дней (посещения отмечают задним числом)
+
+# --- Расписание: агент работает сам, без кнопок ---
+# Планировщик живёт внутри бота, поэтому не зависит от хостинга (Mac, Railway, VPS — одинаково).
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
+try:
+    TZ = ZoneInfo(TIMEZONE)
+except ZoneInfoNotFoundError:      # нет базы часовых поясов — работаем по UTC
+    TZ = ZoneInfo("UTC")
+SCHEDULE_ENABLED = os.getenv("SCHEDULE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+SYNC_HOUR = int(os.getenv("SYNC_HOUR", "6"))        # ежедневная выгрузка свежих данных из CRM
+SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
+REPORT_WEEKDAY = int(os.getenv("REPORT_WEEKDAY", "1"))   # 1 = понедельник
+REPORT_HOUR = int(os.getenv("REPORT_HOUR", "9"))
+REPORT_MINUTE = int(os.getenv("REPORT_MINUTE", "0"))
+SYNC_STALE_HOURS = int(os.getenv("SYNC_STALE_HOURS", "20"))  # при запуске: если данные старше — обновить
+BACKFILL_WEEKS = int(os.getenv("BACKFILL_WEEKS", "12"))     # столько недель доливаем на пустом сервере
 
 # --- Зарплата педагогов ---
 # Ставка за одно занятие по числу пришедших: (от, до включительно, рублей). Одна для всех педагогов.

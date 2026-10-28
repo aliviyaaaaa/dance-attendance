@@ -1,0 +1,17 @@
+# Секреты и личные данные — в контейнер не попадают
+.env
+teacher_aliases.json
+data
+logs
+reports
+*.sqlite
+*.db
+
+# Служебное
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+local.garage.attendance.plist
