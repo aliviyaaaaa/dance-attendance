@@ -15,8 +15,10 @@ data/scheduler_state.json — чтобы при перезапуске не сл
 import asyncio
 import json
 import logging
+import os
 from datetime import date, datetime, timedelta
 
+import httpx
 from aiogram.types import FSInputFile
 
 from app import config, db, pg, sync
@@ -28,6 +30,9 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4000
 STATE_PATH = config.PROJECT_DIR / "data" / "scheduler_state.json"
+WATCHDOG_INTERVAL_SEC = 60
+WATCHDOG_RESET_AFTER = 2      # столько неудачных проверок подряд → сбросить залипшие соединения
+WATCHDOG_EXIT_AFTER = 5       # столько неудачных проверок подряд → перезапуск процесса
 WEEKDAY_NAMES = {1: "понедельник", 2: "вторник", 3: "среда", 4: "четверг",
                  5: "пятница", 6: "суббота", 7: "воскресенье"}
 
@@ -194,6 +199,51 @@ def status_lines() -> list[str]:
     lines.append(f"📬 Следующий отчёт: {nxt_report:%d.%m %H:%M} ({day_name})")
     lines.append(f"☁️ Облачная база: {pg_status()}")
     return lines
+
+
+# ---------- сторож: связь с Telegram ----------
+
+async def telegram_reachable(timeout: float = 10.0) -> bool:
+    """Проверка связи с Telegram отдельным соединением — не тем, что висит у бота."""
+    if not config.TELEGRAM_BOT_TOKEN:
+        return False
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/getMe"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+        return response.status_code == 200 and response.json().get("ok") is True
+    except Exception:
+        return False
+
+
+async def watchdog(bot) -> None:
+    """Следить за связью с Telegram и чинить залипшие соединения.
+
+    Бот живёт на ноутбуке, и сеть меняется: переехали, сменился Wi-Fi, включился
+    мобильный интернет. Старые соединения при этом «залипают» — опрос Telegram висит
+    по таймауту, хотя интернет есть. Наблюдатель проверяет связь отдельным запросом
+    и, если сеть жива, сбрасывает сессию бота: тот подключается заново.
+    Если связи нет долго — выходим из процесса, launchd поднимет бота заново.
+    """
+    failures = 0
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL_SEC)
+        if await telegram_reachable():
+            if failures:
+                log.info("Связь с Telegram восстановилась")
+            failures = 0
+            continue
+        failures += 1
+        log.warning("Проверка связи с Telegram не прошла (подряд %d)", failures)
+        if failures >= WATCHDOG_EXIT_AFTER:
+            log.error("Связи нет %d проверок подряд — перезапускаю бота", failures)
+            os._exit(1)
+        if failures >= WATCHDOG_RESET_AFTER:
+            log.warning("Сбрасываю сессию бота — переподключаюсь к Telegram")
+            try:
+                await bot.session.close()
+            except Exception:
+                log.exception("Не удалось сбросить сессию бота")
 
 
 # ---------- фоновый цикл ----------

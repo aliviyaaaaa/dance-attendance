@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
@@ -385,7 +386,10 @@ async def on_error(event):
 async def main():
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("В .env не задан TELEGRAM_BOT_TOKEN")
-    bot = Bot(config.TELEGRAM_BOT_TOKEN)
+    # Таймаут клиента меньше не нужен: длинный опрос сервера — 10 секунд.
+    # 30 секунд вместо 60 — зависшее соединение обнаружится вдвое быстрее.
+    session = AiohttpSession(timeout=30)
+    bot = Bot(config.TELEGRAM_BOT_TOKEN, session=session)
     await bot.set_my_commands(COMMANDS)
     me = await bot.get_me()
     log.info("Бот @%s запущен. В белом списке: %d пользователь(ей)", me.username,
@@ -397,9 +401,11 @@ async def main():
                  config.SYNC_HOUR, config.SYNC_MINUTE,
                  scheduler.WEEKDAY_NAMES.get(config.REPORT_WEEKDAY, "—"),
                  config.REPORT_HOUR, config.REPORT_MINUTE)
+    watchdog_task = asyncio.create_task(scheduler.watchdog(bot))
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, polling_timeout=5)
     finally:
+        watchdog_task.cancel()
         if task:
             task.cancel()
 

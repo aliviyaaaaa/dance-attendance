@@ -1,5 +1,6 @@
 """Расписание агента: когда что запускается само. Запуск: .venv/bin/pytest"""
 
+import asyncio
 from datetime import datetime
 
 from app import config, scheduler
@@ -64,3 +65,14 @@ def test_status_lines_report_schedule(monkeypatch):
     assert len(lines) == 5
     assert any("автосинхронизация" in line.lower() for line in lines)
     assert any("отчёт" in line.lower() for line in lines)
+
+
+def test_watchdog_thresholds_are_ordered():
+    # сначала сбрасываем залипшие соединения, и только потом перезапускаем процесс
+    assert 0 < scheduler.WATCHDOG_RESET_AFTER < scheduler.WATCHDOG_EXIT_AFTER
+    assert scheduler.WATCHDOG_INTERVAL_SEC <= 120
+
+
+def test_reachability_check_without_token(monkeypatch):
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
+    assert not asyncio.run(scheduler.telegram_reachable())
