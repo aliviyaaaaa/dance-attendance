@@ -149,6 +149,19 @@ async def backfill_if_empty() -> bool:
     return True
 
 
+def _build_report(monday: date) -> tuple[str, str | None]:
+    """Собрать отчёт в том же потоке, где открыто соединение с SQLite.
+
+    SQLite не даёт использовать соединение из другого потока, поэтому
+    и открываем, и закрываем его внутри одного вызова.
+    """
+    conn = db.connect()
+    try:
+        return build_report(conn, monday)
+    finally:
+        conn.close()
+
+
 async def send_report(bot, monday: date | None = None, force: bool = False) -> str | None:
     """Отчёт за неделю — всем, кто в белом списке.
 
@@ -160,11 +173,7 @@ async def send_report(bot, monday: date | None = None, force: bool = False) -> s
         log.info("Отчёт за %s уже отправлен — пропускаю", monday)
         return None
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    conn = db.connect()
-    try:
-        text, excel = await asyncio.to_thread(build_report, conn, monday)
-    finally:
-        conn.close()
+    text, excel = await asyncio.to_thread(_build_report, monday)
     for chat_id in sorted(config.TELEGRAM_ALLOWED_USER_IDS):
         try:
             for chunk in split_text(text):
