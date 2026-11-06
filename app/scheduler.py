@@ -149,9 +149,16 @@ async def backfill_if_empty() -> bool:
     return True
 
 
-async def send_report(bot, monday: date | None = None) -> str:
-    """Отчёт за прошлую неделю — всем, кто в белом списке."""
+async def send_report(bot, monday: date | None = None, force: bool = False) -> str | None:
+    """Отчёт за неделю — всем, кто в белом списке.
+
+    Повторно за ту же неделю не отправляет: отчёт мог уйти по расписанию,
+    а потом бот перезапустился — второй раз слать не нужно.
+    """
     monday = monday or last_full_week()
+    if not force and read_state().get("last_report_week") == monday.isoformat():
+        log.info("Отчёт за %s уже отправлен — пропускаю", monday)
+        return None
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     conn = db.connect()
     try:
@@ -170,6 +177,26 @@ async def send_report(bot, monday: date | None = None) -> str:
                 last_report_week=monday.isoformat())
     log.info("Еженедельный отчёт за %s отправлен", monday)
     return monday.isoformat()
+
+
+def pending_report_week(today: date | None = None) -> date | None:
+    """Неделя, за которую отчёт ещё не отправляли.
+
+    Бывает, что компьютер спал в понедельник утром — тогда отчёт молча пропадал.
+    При запуске догоняем его, но не позже чем за две недели: старые уже неактуальны.
+    """
+    today = today or date.today()
+    monday = last_full_week(today)
+    raw = read_state().get("last_report_week")
+    try:
+        sent = date.fromisoformat(raw) if raw else None
+    except ValueError:
+        sent = None
+    if sent is not None and sent >= monday:
+        return None
+    if (today - monday).days > 14:
+        return None
+    return monday
 
 
 # ---------- сводка для /status ----------
@@ -249,7 +276,7 @@ async def watchdog(bot) -> None:
 # ---------- фоновый цикл ----------
 
 async def startup(bot) -> None:
-    """При запуске: долить историю, обновить протухшее, отправить пропущенный отчёт."""
+    """При запуске: долить историю, обновить протухшее, догнать пропущенный отчёт."""
     try:
         await backfill_if_empty()
     except Exception:
@@ -264,13 +291,15 @@ async def startup(bot) -> None:
             log.exception("Стартовое обновление из CRM не удалось")
 
     now = now_local()
-    monday = last_full_week()
-    if now.isoweekday() == config.REPORT_WEEKDAY and now.hour >= config.REPORT_HOUR:
-        if state.get("last_report_week") != monday.isoformat():
-            try:
-                await send_report(bot, monday)
-            except Exception:
-                log.exception("Пропущенный еженедельный отчёт не отправлен")
+    # в день отчёта до назначенного времени ждём — дальше отчёт уйдёт по расписанию
+    if now.isoweekday() == config.REPORT_WEEKDAY and now.hour < config.REPORT_HOUR:
+        return
+    week = pending_report_week()
+    if week:
+        try:
+            await send_report(bot, week)
+        except Exception:
+            log.exception("Пропущенный еженедельный отчёт не отправлен")
 
 
 async def run(bot) -> None:

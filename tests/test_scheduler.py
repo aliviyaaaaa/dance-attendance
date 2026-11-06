@@ -1,7 +1,7 @@
 """Расписание агента: когда что запускается само. Запуск: .venv/bin/pytest"""
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 
 from app import config, scheduler
 from app.scheduler import next_run, split_text
@@ -76,3 +76,28 @@ def test_watchdog_thresholds_are_ordered():
 def test_reachability_check_without_token(monkeypatch):
     monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
     assert not asyncio.run(scheduler.telegram_reachable())
+
+
+def test_pending_report_is_found_when_it_was_missed(tmp_path, monkeypatch):
+    # компьютер спал в понедельник утром — отчёт за прошлую неделю не ушёл
+    monkeypatch.setattr(scheduler, "STATE_PATH", tmp_path / "state.json")
+    monday = date(2026, 11, 9)
+    monkeypatch.setattr(scheduler, "last_full_week", lambda today=None: monday)
+    assert scheduler.pending_report_week(date(2026, 11, 10)) == monday
+
+
+def test_pending_report_is_not_repeated(tmp_path, monkeypatch):
+    # отчёт за эту неделю уже отправлен — второй раз не отправляем
+    monkeypatch.setattr(scheduler, "STATE_PATH", tmp_path / "state.json")
+    monday = date(2026, 11, 9)
+    monkeypatch.setattr(scheduler, "last_full_week", lambda today=None: monday)
+    scheduler.write_state(last_report_week=monday.isoformat())
+    assert scheduler.pending_report_week(date(2026, 11, 10)) is None
+
+
+def test_pending_report_ignores_very_old_week(tmp_path, monkeypatch):
+    # отчёт за две недели назад уже неактуален — не мучаем сообщениями
+    monkeypatch.setattr(scheduler, "STATE_PATH", tmp_path / "state.json")
+    monday = date(2026, 10, 19)
+    monkeypatch.setattr(scheduler, "last_full_week", lambda today=None: monday)
+    assert scheduler.pending_report_week(date(2026, 11, 10)) is None
